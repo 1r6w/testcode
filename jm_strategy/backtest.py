@@ -21,7 +21,9 @@ class Account:
 
 def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=None, sig=None):
     """sig 为空时按 Params 计算信号；也可传入外部信号（需含 atr/exit_trend/stm/bull/bear/long_sig/short_sig，
-    exit_mode="signal" 时另需 exit_long/exit_short）。"""
+    exit_mode="signal" 时另需 exit_long/exit_short）。
+    可选第二套信号 long_sig2/short_sig2/exit_long2/exit_short2/long_stop2/short_stop2：
+    由第二套信号开的仓只按第二套离场信号平仓（两套信号同时出现时第一套优先）。"""
     p, acct = p or Params(), acct or Account()
     sig = compute_signals(df, p) if sig is None else sig
     if start or end:
@@ -36,6 +38,11 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     # 可选：信号自带止损价位（如前低/前高），否则用 stop_k × ATR
     long_stop = sig["long_stop"].to_numpy(float) if "long_stop" in sig else None
     short_stop = sig["short_stop"].to_numpy(float) if "short_stop" in sig else None
+    two = "long_sig2" in sig
+    if two:
+        long_sig2, short_sig2 = sig["long_sig2"].to_numpy(bool), sig["short_sig2"].to_numpy(bool)
+        exit_long2, exit_short2 = sig["exit_long2"].to_numpy(bool), sig["exit_short2"].to_numpy(bool)
+        long_stop2, short_stop2 = sig["long_stop2"].to_numpy(float), sig["short_stop2"].to_numpy(float)
     long_sig, short_sig = sig["long_sig"].to_numpy(bool), sig["short_sig"].to_numpy(bool)
     dates = df.index
     slip = acct.slip_ticks * acct.tick
@@ -48,6 +55,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     pending_entry = 0    # +1 / -1
     pending_atr = 0.0
     pending_level = np.nan  # 信号自带的止损价位
+    pending_kind = kind = 1  # 1 = 第一套信号开仓，2 = 第二套
     trades, equity = [], np.empty(len(df))
 
     def fee(px, lots):
@@ -61,7 +69,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         cash += pnl
         trades.append(dict(entry_date=dates[entry_i], exit_date=dates[i], side="多" if side > 0 else "空",
                            lots=abs(pos), entry=entry_px, exit=fill, pnl=pnl,
-                           R=(fill - entry_px) * side / init_risk, bars=i - entry_i, reason=reason))
+                           R=(fill - entry_px) * side / init_risk, bars=i - entry_i, reason=reason, kind=kind))
         pos = 0
 
     init_risk = 1.0
@@ -80,7 +88,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
             lots = math.floor(equity_now * acct.risk_per_trade / (dist * acct.mult))
             lots = min(lots, math.floor(equity_now * acct.max_leverage / (fill * acct.mult)))
             if lots > 0:
-                pos, entry_px, entry_i, init_risk = side * lots, fill, i, dist
+                pos, entry_px, entry_i, init_risk, kind = side * lots, fill, i, dist, pending_kind
                 stop, ext = fill - side * dist, fill
                 cash -= fee(fill, lots)
         pending_entry = 0
@@ -104,17 +112,23 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
                 pending_exit, exit_reason = True, "SAR翻转"
             elif p.exit_mode == "stm" and stm[i] * side < 0:
                 pending_exit, exit_reason = True, "STM穿零"
-            elif p.exit_mode == "signal" and (exit_long[i] if side > 0 else exit_short[i]):
+            elif p.exit_mode == "signal" and kind == 1 and (exit_long[i] if side > 0 else exit_short[i]):
                 pending_exit, exit_reason = True, "指标离场"
+            elif two and kind == 2 and (exit_long2[i] if side > 0 else exit_short2[i]):
+                pending_exit, exit_reason = True, "拐点单离场"
 
         flat_next = pos == 0 or pending_exit
         if flat_next and i + 1 < len(df):
             if long_sig[i] or (pending_exit and pos < 0 and bull[i]):
-                pending_entry, pending_atr = 1, atr[i]
+                pending_entry, pending_atr, pending_kind = 1, atr[i], 1
                 pending_level = long_stop[i] if long_stop is not None else np.nan
             elif short_sig[i] or (pending_exit and pos > 0 and bear[i]):
-                pending_entry, pending_atr = -1, atr[i]
+                pending_entry, pending_atr, pending_kind = -1, atr[i], 1
                 pending_level = short_stop[i] if short_stop is not None else np.nan
+            elif two and long_sig2[i] and pos <= 0:
+                pending_entry, pending_atr, pending_kind, pending_level = 1, atr[i], 2, long_stop2[i]
+            elif two and short_sig2[i] and pos >= 0:
+                pending_entry, pending_atr, pending_kind, pending_level = -1, atr[i], 2, short_stop2[i]
 
         equity[i] = cash + ((c[i] - entry_px) * pos * acct.mult if pos else 0.0)
 
