@@ -3,7 +3,8 @@
 用法：
   python run_backtest.py                       # 用 akshare 下载合约并合成加权指数后回测
   python run_backtest.py --csv JM加权.csv       # 用通达信/文华导出的加权日线回测
-  python run_backtest.py --optimize            # 样本内(<=2020)网格寻参，样本外(2021起)检验
+  python run_backtest.py --csv data/JM_weighted_user.csv --grid   # 附带参数邻域稳健性检验
+  python run_backtest.py --csv data/JM_weighted_user.csv --risk 0.05  # 调整单笔风险
 """
 import argparse
 import itertools
@@ -25,35 +26,31 @@ def fmt(m):
                      for k, v in m.items())
 
 
-def score(m):
-    """寻参目标：满足胜率>=40%、盈亏比 3~6 的前提下，卡玛比率最高。"""
-    if m.get("交易次数", 0) < 15:
-        return -1e9
-    pen = 0.0
-    pen += max(0, 0.40 - m["胜率"]) * 20
-    pen += max(0, 3 - m["盈亏比(均盈/均亏)"]) + max(0, m["盈亏比(均盈/均亏)"] - 6)
-    return m["卡玛比率"] - pen
-
-
-def optimize(df, acct):
-    grid = dict(stop_k=[1.5, 2.0, 2.5, 3.0], trail_k=[0, 3.0, 4.0], sar_step=[0.01, 0.02],
-                stm_min=[0, 10], use_top_filter=[True, False])
+def robustness_grid(df, acct):
+    """参数邻域稳健性检验：离场 SAR 步长 × 初始止损 × 趋势均线 × STM 门槛，共 160 组，分样本内/样本外统计。"""
+    grid = dict(exit_sar_step=[0.004, 0.005, 0.0075, 0.01], stop_k=[1.0, 1.25, 1.5, 1.75, 2.0],
+                trend_n=[40, 60, 80, 100], stm_min=[0, 10])
     rows = []
     for vals in itertools.product(*grid.values()):
-        p = Params(**dict(zip(grid, vals)))
-        eq, tr, _ = run_backtest(df, p, acct, end=TRAIN_END)
-        m = metrics(eq, tr, acct.capital)
-        rows.append({**dict(zip(grid, vals)), **m, "score": score(m)})
-    res = pd.DataFrame(rows).sort_values("score", ascending=False)
-    best = res.iloc[0]
-    return Params(**{k: (bool(best[k]) if k == "use_top_filter" else best[k]) for k in grid}), res
+        kw = dict(zip(grid, vals))
+        p = Params(exit_sar_max=kw["exit_sar_step"] * 10, **kw)
+        row = dict(kw)
+        for tag, rng in (("IS", dict(end=TRAIN_END)), ("OOS", dict(start=TEST_START))):
+            eq, tr, _ = run_backtest(df, p, acct, **rng)
+            m = metrics(eq, tr, acct.capital)
+            row.update({f"{tag}_{k}": m.get(k) for k in ("交易次数", "胜率", "盈亏比(按R)", "期望值R/笔", "年化收益率", "最大回撤")})
+        rows.append(row)
+    res = pd.DataFrame(rows)
+    print(f"\n参数邻域 {len(res)} 组：样本内正期望占比 {(res['IS_期望值R/笔'] > 0).mean():.1%}，"
+          f"样本外正期望占比 {(res['OOS_期望值R/笔'] > 0).mean():.1%}")
+    return res
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv")
     ap.add_argument("--refresh", action="store_true")
-    ap.add_argument("--optimize", action="store_true")
+    ap.add_argument("--grid", action="store_true", help="输出参数邻域稳健性检验")
     ap.add_argument("--risk", type=float, default=0.02, help="每笔风险占权益比例，调节年化/回撤")
     ap.add_argument("--out", default="results")
     a = ap.parse_args()
@@ -63,10 +60,9 @@ def main():
     os.makedirs(a.out, exist_ok=True)
 
     p = Params()
-    if a.optimize:
-        p, res = optimize(df, acct)
-        res.to_csv(os.path.join(a.out, "grid_train.csv"), index=False)
-        print("样本内最优参数:", p)
+    print("策略参数:", p)
+    if a.grid:
+        robustness_grid(df, acct).to_csv(os.path.join(a.out, "robustness_grid.csv"), index=False)
 
     for name, kw in [("全样本", {}), ("样本内", dict(end=TRAIN_END)), ("样本外", dict(start=TEST_START))]:
         eq, tr, _ = run_backtest(df, p, acct, **kw)

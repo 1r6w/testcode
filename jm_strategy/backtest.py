@@ -25,8 +25,10 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     if start or end:
         df, sig = df.loc[start:end], sig.loc[start:end]
     o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
-    sar, atr = sig["sar"].to_numpy(float), sig["atr"].to_numpy(float)
-    trend = sig["sar_trend"].to_numpy(int)
+    atr = sig["atr"].to_numpy(float)
+    trend = sig["exit_trend"].to_numpy(int)
+    stm = sig["stm"].to_numpy(float)
+    bull, bear = sig["bull"].to_numpy(bool), sig["bear"].to_numpy(bool)
     long_sig, short_sig = sig["long_sig"].to_numpy(bool), sig["short_sig"].to_numpy(bool)
     dates = df.index
     slip = acct.slip_ticks * acct.tick
@@ -35,7 +37,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     pos = 0              # 正多负空，单位：手
     entry_px = stop = ext = 0.0
     entry_i = 0
-    pending_exit = False
+    pending_exit, exit_reason = False, ""
     pending_entry = 0    # +1 / -1
     pending_atr = 0.0
     trades, equity = [], np.empty(len(df))
@@ -58,7 +60,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     for i in range(len(df)):
         # ---- 开盘：执行挂单 ----
         if pending_exit and pos != 0:
-            close_pos(i, o[i], "SAR翻转")
+            close_pos(i, o[i], exit_reason)
         pending_exit = False
         if pending_entry and pos == 0 and pending_atr > 0:
             side = pending_entry
@@ -73,31 +75,31 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
                 cash -= fee(fill, lots)
         pending_entry = 0
 
-        # ---- 盘中：止损 ----
+        # ---- 盘中：止损（初始/保本/吊灯） ----
         if pos > 0 and l[i] <= stop:
-            close_pos(i, min(o[i], stop), "止损")
+            close_pos(i, min(o[i], stop), "止损" if stop < entry_px else "跟踪止盈")
         elif pos < 0 and h[i] >= stop:
-            close_pos(i, max(o[i], stop), "止损")
+            close_pos(i, max(o[i], stop), "止损" if stop > entry_px else "跟踪止盈")
 
-        # ---- 收盘：更新跟踪、生成信号 ----
-        if pos > 0:
-            ext = max(ext, h[i])
+        # ---- 收盘：更新跟踪止损、判断离场、生成信号 ----
+        if pos != 0:
+            side = 1 if pos > 0 else -1
+            ext = max(ext, h[i]) if side > 0 else min(ext, l[i])
             if p.trail_k > 0:
-                stop = max(stop, ext - p.trail_k * atr[i])
-            if trend[i] == -1:
-                pending_exit = True
-        elif pos < 0:
-            ext = min(ext, l[i])
-            if p.trail_k > 0:
-                stop = min(stop, ext + p.trail_k * atr[i])
-            if trend[i] == 1:
-                pending_exit = True
+                trail = ext - side * p.trail_k * atr[i]
+                stop = max(stop, trail) if side > 0 else min(stop, trail)
+            if p.breakeven_r > 0 and (ext - entry_px) * side >= p.breakeven_r * init_risk:
+                stop = max(stop, entry_px) if side > 0 else min(stop, entry_px)
+            if p.exit_mode == "sar" and trend[i] == -side:
+                pending_exit, exit_reason = True, "SAR翻转"
+            elif p.exit_mode == "stm" and stm[i] * side < 0:
+                pending_exit, exit_reason = True, "STM穿零"
 
         flat_next = pos == 0 or pending_exit
         if flat_next and i + 1 < len(df):
-            if long_sig[i] or (pending_exit and pos < 0 and sig["bull"].iat[i]):
+            if long_sig[i] or (pending_exit and pos < 0 and bull[i]):
                 pending_entry, pending_atr = 1, atr[i]
-            elif short_sig[i] or (pending_exit and pos > 0 and sig["bear"].iat[i]):
+            elif short_sig[i] or (pending_exit and pos > 0 and bear[i]):
                 pending_entry, pending_atr = -1, atr[i]
 
         equity[i] = cash + ((c[i] - entry_px) * pos * acct.mult if pos else 0.0)
@@ -136,6 +138,7 @@ def metrics(eq, tr, capital):
         m.update({
             "胜率": len(win) / len(tr),
             "盈亏比(均盈/均亏)": avg_w / avg_l if avg_l and avg_l > 0 else np.nan,
+            "盈亏比(按R)": win.R.mean() / -loss.R.mean() if len(win) and len(loss) and loss.R.mean() < 0 else np.nan,
             "平均R(均盈)": win.R.mean() if len(win) else 0.0,
             "平均R(均亏)": loss.R.mean() if len(loss) else 0.0,
             "利润因子": win.pnl.sum() / -loss.pnl.sum() if loss.pnl.sum() < 0 else np.nan,
