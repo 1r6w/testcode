@@ -33,6 +33,9 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     bull, bear = sig["bull"].to_numpy(bool), sig["bear"].to_numpy(bool)
     if p.exit_mode == "signal":
         exit_long, exit_short = sig["exit_long"].to_numpy(bool), sig["exit_short"].to_numpy(bool)
+    # 可选：信号自带止损价位（如前低/前高），否则用 stop_k × ATR
+    long_stop = sig["long_stop"].to_numpy(float) if "long_stop" in sig else None
+    short_stop = sig["short_stop"].to_numpy(float) if "short_stop" in sig else None
     long_sig, short_sig = sig["long_sig"].to_numpy(bool), sig["short_sig"].to_numpy(bool)
     dates = df.index
     slip = acct.slip_ticks * acct.tick
@@ -44,6 +47,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     pending_exit, exit_reason = False, ""
     pending_entry = 0    # +1 / -1
     pending_atr = 0.0
+    pending_level = np.nan  # 信号自带的止损价位
     trades, equity = [], np.empty(len(df))
 
     def fee(px, lots):
@@ -70,6 +74,8 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
             side = pending_entry
             fill = o[i] + side * slip
             dist = p.stop_k * pending_atr
+            if not np.isnan(pending_level):  # 前低/前高止损，距离限制在 0.5~4 倍 ATR
+                dist = min(max((fill - pending_level) * side, 0.5 * pending_atr), 4.0 * pending_atr)
             equity_now = cash
             lots = math.floor(equity_now * acct.risk_per_trade / (dist * acct.mult))
             lots = min(lots, math.floor(equity_now * acct.max_leverage / (fill * acct.mult)))
@@ -105,8 +111,10 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         if flat_next and i + 1 < len(df):
             if long_sig[i] or (pending_exit and pos < 0 and bull[i]):
                 pending_entry, pending_atr = 1, atr[i]
+                pending_level = long_stop[i] if long_stop is not None else np.nan
             elif short_sig[i] or (pending_exit and pos > 0 and bear[i]):
                 pending_entry, pending_atr = -1, atr[i]
+                pending_level = short_stop[i] if short_stop is not None else np.nan
 
         equity[i] = cash + ((c[i] - entry_px) * pos * acct.mult if pos else 0.0)
 
