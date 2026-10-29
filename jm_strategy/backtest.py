@@ -19,9 +19,11 @@ class Account:
     max_leverage: float = 3.0    # 名义市值 / 权益 上限（焦煤保证金约 15%-20%）
 
 
-def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=None):
+def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=None, sig=None):
+    """sig 为空时按 Params 计算信号；也可传入外部信号（需含 atr/exit_trend/stm/bull/bear/long_sig/short_sig，
+    exit_mode="signal" 时另需 exit_long/exit_short）。"""
     p, acct = p or Params(), acct or Account()
-    sig = compute_signals(df, p)
+    sig = compute_signals(df, p) if sig is None else sig
     if start or end:
         df, sig = df.loc[start:end], sig.loc[start:end]
     o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
@@ -29,6 +31,8 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     trend = sig["exit_trend"].to_numpy(int)
     stm = sig["stm"].to_numpy(float)
     bull, bear = sig["bull"].to_numpy(bool), sig["bear"].to_numpy(bool)
+    if p.exit_mode == "signal":
+        exit_long, exit_short = sig["exit_long"].to_numpy(bool), sig["exit_short"].to_numpy(bool)
     long_sig, short_sig = sig["long_sig"].to_numpy(bool), sig["short_sig"].to_numpy(bool)
     dates = df.index
     slip = acct.slip_ticks * acct.tick
@@ -94,6 +98,8 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
                 pending_exit, exit_reason = True, "SAR翻转"
             elif p.exit_mode == "stm" and stm[i] * side < 0:
                 pending_exit, exit_reason = True, "STM穿零"
+            elif p.exit_mode == "signal" and (exit_long[i] if side > 0 else exit_short[i]):
+                pending_exit, exit_reason = True, "指标离场"
 
         flat_next = pos == 0 or pending_exit
         if flat_next and i + 1 < len(df):
