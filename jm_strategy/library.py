@@ -14,7 +14,7 @@ S4 灵敏 SAR 翻转反手（可加 STM / MA60 过滤）
 S5 先出现双指标减速，再等灵敏 SAR 翻转确认入场
 S6 两段式：3 天双减速先开半仓，灵敏 SAR 翻转或绿变红加仓
 S7 1+4 趋势共振，入场 SAR 改用更灵敏参数
-S8 S4 高频版：入场可放宽为“SAR 多头且指标1>0 首次同时成立”，离场可用更快的 SAR，目标约每月一笔
+S8 S4 扩展版（用于提高频率）：入场可放宽为“SAR 多头且指标1>0 首次同时成立”，离场可用更快的 SAR，目标约每月一笔
 离场（exit）：rev = 出现反向开仓信号即平仓（并在反向过滤满足时反手）；sar:X = SAR 组 X 在入场后反向翻转；
              可用 + 组合；S7 的 slowstate = 慢 SAR 方向与持仓相反即平（同 1+4 原规则）。
 止损（stop）：swing = 近 10 天最低价/最高价外加 0.2ATR；atrX = X 倍 ATR。止损距离限制在 0.5~4 ATR。
@@ -165,7 +165,7 @@ STRATEGIES = {
                 stop=["swing", "atr2"])),
     "S7": ("1+4趋势共振+更灵敏的入场SAR", s7,
            dict(sar=["std", "s1", "s2", "s3"], exit=["slowstate", "sar:slow"], stop=["atr1.5", "atr2.5"])),
-    "S8": ("S4高频版(约每月一笔)", s8,
+    "S8": ("S4扩展版(入场/离场放宽)", s8,
            dict(sar=["s1", "s2", "s3", "std"], entry=["flip+stm4", "state", "flip"],
                 exit=["sar:same", "sar:std", "sar:mid", "sar:slow", "rev"], stop=["atr1.5", "atr2", "atr2.5"])),
 }
