@@ -81,6 +81,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         fill = px - side * slip
         pnl = (fill - entry_px) * pos * acct.mult - fee(fill, abs(pos), today=i == entry_i)
         cash += pnl
+        pnl -= entry_fees  # 记录的单笔盈亏含开仓手续费（开仓时已从资金中扣除）
         trades.append(dict(entry_date=dates[entry_i], exit_date=dates[i], side="多" if side > 0 else "空",
                            lots=abs(pos), entry=entry_px, exit=fill, pnl=pnl,
                            R=(fill - entry_px) * side / init_risk, bars=i - entry_i, reason=reason, kind=kind,
@@ -88,6 +89,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         pos = 0
 
     init_risk = 1.0
+    entry_fees = 0.0
     for i in range(len(df)):
         # ---- 开盘：执行挂单 ----
         if pending_exit and pos != 0:
@@ -110,7 +112,8 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
             if lots > 0:
                 pos, entry_px, entry_i, init_risk, kind = side * lots, fill, i, dist, pending_kind
                 stop, ext = fill - side * dist, fill
-                cash -= fee(fill, lots)
+                entry_fees = fee(fill, lots)
+                cash -= entry_fees
                 added = entry_frac >= 1.0
         pending_entry = 0
         if pending_add and pos != 0 and not added:  # 分批建仓：按剩余风险加仓一次
@@ -123,6 +126,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
                 if add > 0:
                     entry_px = (entry_px * abs(pos) + fill * add) / (abs(pos) + add)
                     pos += side * add
+                    entry_fees += fee(fill, add)
                     cash -= fee(fill, add)
                     added = True
         pending_add = False
