@@ -1,0 +1,57 @@
+// ==========================================================================
+// S4 焦煤加权 日线：灵敏SAR翻转 + 指标1确认 + 慢SAR跟踪止盈 + 2.5倍ATR止损
+// 适用：文华财经 WH8 麦语言，加载到焦煤指数（加权）日线
+// 建议设置：信号执行方式选“K线走完确认信号下单”；初始资金 500000；
+//          手续费按交易所标准加 0.01 元/手；滑点 1 跳
+// ==========================================================================
+
+// ---------- 灵敏 SAR 与 慢 SAR ----------
+S1:=SAR(5,3,30);                 // 灵敏SAR：周期5，步长3%，极限30%
+S2:=SAR(10,0.5,5);               // 慢SAR：周期10，步长0.5%，极限5%
+SUP:=S1<C;                       // 灵敏SAR在K线下方 = 多头
+SLOWUP:=S2<C;                    // 慢SAR在K线下方 = 多头
+FLIPUP:=SUP AND REF(SUP,1)=0;    // 灵敏SAR由空翻多
+FLIPDN:=SUP=0 AND REF(SUP,1);    // 灵敏SAR由多翻空
+SLOWDN:=SLOWUP=0 AND REF(SLOWUP,1);  // 慢SAR由多翻空
+SLOWUPF:=SLOWUP AND REF(SLOWUP,1)=0; // 慢SAR由空翻多
+
+// ---------- 指标1（简化STM） ----------
+DIF:=EMA(C,12)-EMA(C,26);
+DEA:=EMA(DIF,9);
+RSI1:=SMA(MAX(C-REF(C,1),0),14,1)/SMA(ABS(C-REF(C,1)),14,1)*100;
+STM:=(MA(C,5)-MA(C,20))+(DIF-DEA)*5+(RSI1-50)/2;
+
+// ---------- ATR(14) ----------
+TR1:=MAX(MAX(H-L,ABS(REF(C,1)-H)),ABS(REF(C,1)-L));
+ATR14:=MA(TR1,14);
+
+// ---------- 仓位：半仓（权益的50%做保证金，保证金比例按12%） ----------
+// 如需按期货公司实际保证金计算，把 0.12 改成 MARGIN
+LOTS:=INTPART(MONEYTOT*0.5/(C*UNIT*0.12));
+
+// ---------- 止损价：开仓价 ∓ 2.5 × 开仓那根K线的ATR，固定不动 ----------
+LSTOP:=BKPRICE-2.5*REF(ATR14,BARSBK);
+SSTOP:=SKPRICE+2.5*REF(ATR14,BARSSK);
+
+// ---------- 进场：空仓时才开仓，不加仓、不反手 ----------
+BKVOL=0 AND SKVOL=0 AND FLIPUP AND STM>0,BK(LOTS);
+BKVOL=0 AND SKVOL=0 AND FLIPDN AND STM<0,SK(LOTS);
+
+// ---------- 止损 ----------
+BKVOL>0 AND BARSBK>=1 AND L<=LSTOP,SP(BKVOL);
+SKVOL>0 AND BARSSK>=1 AND H>=SSTOP,BP(SKVOL);
+
+// ---------- 止盈：开仓后慢SAR反向翻转（含开仓当根就翻转的情况） ----------
+BKVOL>0 AND BARSBK>=1 AND (SLOWDN OR (BARSBK=1 AND REF(SLOWDN,1))),SP(BKVOL);
+SKVOL>0 AND BARSSK>=1 AND (SLOWUPF OR (BARSSK=1 AND REF(SLOWUPF,1))),BP(SKVOL);
+
+// ---------- 画图（可删） ----------
+灵敏SAR:S1,COLORYELLOW,POINTDOT;
+慢SAR:S2,COLORCYAN,POINTDOT;
+
+// 与 Python 回测的差异：
+// 1. 文华在“K线走完确认信号下单”模式下按信号K线收盘价成交；Python 回测按下一根K线开盘价成交。
+// 2. 止损在本模式下是收盘时判断、收盘价成交；Python 回测是盘中触价即止损（跳空按开盘价）。
+//    如需盘中触价止损，可在 WH8 中对止损两行改用“不确认信号”或软件自带的止损设置。
+// 3. 不同软件的 SAR 初始化方式略有差异，回测开头几根K线的信号可能不同。
+// 4. 用“SAR在收盘价上方/下方”判断多空：已在本数据上核对，与 SAR 自身方向逐日完全一致。
