@@ -23,9 +23,12 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     """sig 为空时按 Params 计算信号；也可传入外部信号（需含 atr/exit_trend/stm/bull/bear/long_sig/short_sig，
     exit_mode="signal" 时另需 exit_long/exit_short）。
     可选第二套信号 long_sig2/short_sig2/exit_long2/exit_short2/long_stop2/short_stop2：
-    由第二套信号开的仓只按第二套离场信号平仓（两套信号同时出现时第一套优先）。"""
+    由第二套信号开的仓只按第二套离场信号平仓（两套信号同时出现时第一套优先）。
+    可选分批建仓：sig.attrs["entry_frac"] 为首次开仓占计划风险的比例，持仓期间 add_long/add_short 为真时
+    次日开盘按剩余风险加仓一次（止损价不变，按新的入场均价计算盈亏）。"""
     p, acct = p or Params(), acct or Account()
     sig = compute_signals(df, p) if sig is None else sig
+    entry_frac = float(sig.attrs.get("entry_frac", 1.0))
     if start or end:
         df, sig = df.loc[start:end], sig.loc[start:end]
     o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
@@ -44,6 +47,9 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         exit_long2, exit_short2 = sig["exit_long2"].to_numpy(bool), sig["exit_short2"].to_numpy(bool)
         long_stop2, short_stop2 = sig["long_stop2"].to_numpy(float), sig["short_stop2"].to_numpy(float)
     long_sig, short_sig = sig["long_sig"].to_numpy(bool), sig["short_sig"].to_numpy(bool)
+    has_add = "add_long" in sig and entry_frac < 1.0
+    if has_add:
+        add_long, add_short = sig["add_long"].to_numpy(bool), sig["add_short"].to_numpy(bool)
     dates = df.index
     slip = acct.slip_ticks * acct.tick
 
@@ -56,6 +62,7 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     pending_atr = 0.0
     pending_level = np.nan  # 信号自带的止损价位
     pending_kind = kind = 1  # 1 = 第一套信号开仓，2 = 第二套
+    pending_add, added = False, True
     trades, equity = [], np.empty(len(df))
 
     def fee(px, lots):
@@ -69,7 +76,8 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
         cash += pnl
         trades.append(dict(entry_date=dates[entry_i], exit_date=dates[i], side="多" if side > 0 else "空",
                            lots=abs(pos), entry=entry_px, exit=fill, pnl=pnl,
-                           R=(fill - entry_px) * side / init_risk, bars=i - entry_i, reason=reason, kind=kind))
+                           R=(fill - entry_px) * side / init_risk, bars=i - entry_i, reason=reason, kind=kind,
+                           added=entry_frac < 1.0 and added))
         pos = 0
 
     init_risk = 1.0
@@ -85,13 +93,27 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
             if not np.isnan(pending_level):  # 前低/前高止损，距离限制在 0.5~4 倍 ATR
                 dist = min(max((fill - pending_level) * side, 0.5 * pending_atr), 4.0 * pending_atr)
             equity_now = cash
-            lots = math.floor(equity_now * acct.risk_per_trade / (dist * acct.mult))
+            lots = math.floor(equity_now * acct.risk_per_trade * entry_frac / (dist * acct.mult))
             lots = min(lots, math.floor(equity_now * acct.max_leverage / (fill * acct.mult)))
             if lots > 0:
                 pos, entry_px, entry_i, init_risk, kind = side * lots, fill, i, dist, pending_kind
                 stop, ext = fill - side * dist, fill
                 cash -= fee(fill, lots)
+                added = entry_frac >= 1.0
         pending_entry = 0
+        if pending_add and pos != 0 and not added:  # 分批建仓：按剩余风险加仓一次
+            side = 1 if pos > 0 else -1
+            fill = o[i] + side * slip
+            dist_add = (fill - stop) * side
+            if dist_add > 0:
+                add = math.floor(cash * acct.risk_per_trade * (1 - entry_frac) / (dist_add * acct.mult))
+                add = min(add, math.floor(cash * acct.max_leverage / (fill * acct.mult)) - abs(pos))
+                if add > 0:
+                    entry_px = (entry_px * abs(pos) + fill * add) / (abs(pos) + add)
+                    pos += side * add
+                    cash -= fee(fill, add)
+                    added = True
+        pending_add = False
 
         # ---- 盘中：止损（初始/保本/吊灯） ----
         if pos > 0 and l[i] <= stop:
@@ -116,6 +138,9 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
                 pending_exit, exit_reason = True, "指标离场"
             elif two and kind == 2 and (exit_long2[i] if side > 0 else exit_short2[i]):
                 pending_exit, exit_reason = True, "拐点单离场"
+
+        if has_add and pos != 0 and not added and not pending_exit and (add_long[i] if pos > 0 else add_short[i]):
+            pending_add = True
 
         flat_next = pos == 0 or pending_exit
         if flat_next and i + 1 < len(df):
