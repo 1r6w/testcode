@@ -4,7 +4,8 @@
   优化1 = 指标三（ATR 标准化 STM，红/黄/绿柱）     指标1 = 指标四（简化 STM，红/绿柱）
   减速：多头视角下 STM<0 且比前一天高（绿柱变黄/变短），空头视角下 STM>0 且比前一天低
   绿变红：STM 上穿零轴；红变绿：STM 下穿零轴
-  SAR 参数组：std=SAR(10,2%,20%)  s1=SAR(5,3%,30%)  s2=SAR(5,4%,40%)  s3=SAR(3,5%,50%)  slow=SAR(10,0.5%,5%)
+  SAR 参数组：std=SAR(10,2%,20%)  s1=SAR(5,3%,30%)  s2=SAR(5,4%,40%)  s3=SAR(3,5%,50%)
+             mid=SAR(10,1%,10%)  slow=SAR(10,0.5%,5%)
 
 S1 双指标连续 k 天减速 → 平仓反手（可加高点抬升、MA60 过滤）
 S2 连续 k 天减速 → 初步抄底（半仓），绿变红 → 加满仓
@@ -13,6 +14,7 @@ S4 灵敏 SAR 翻转反手（可加 STM / MA60 过滤）
 S5 先出现双指标减速，再等灵敏 SAR 翻转确认入场
 S6 两段式：3 天双减速先开半仓，灵敏 SAR 翻转或绿变红加仓
 S7 1+4 趋势共振，入场 SAR 改用更灵敏参数
+S8 S4 高频版：入场可放宽为“SAR 多头且指标1>0 首次同时成立”，离场可用更快的 SAR，目标约每月一笔
 离场（exit）：rev = 出现反向开仓信号即平仓（并在反向过滤满足时反手）；sar:X = SAR 组 X 在入场后反向翻转；
              可用 + 组合；S7 的 slowstate = 慢 SAR 方向与持仓相反即平（同 1+4 原规则）。
 止损（stop）：swing = 近 10 天最低价/最高价外加 0.2ATR；atrX = X 倍 ATR。止损距离限制在 0.5~4 ATR。
@@ -25,7 +27,7 @@ import pandas as pd
 from .indicators import HHV, LLV, MA, REF, SAR, ind_stm_v1, ind_stm_v2
 
 SAR_SETS = {"std": (10, 0.02, 0.2), "s1": (5, 0.03, 0.3), "s2": (5, 0.04, 0.4), "s3": (3, 0.05, 0.5),
-            "slow": (10, 0.005, 0.05)}
+            "mid": (10, 0.01, 0.1), "slow": (10, 0.005, 0.05)}
 
 
 def base_series(df):
@@ -127,6 +129,17 @@ def s6(v, p):
     return raw, raw & (v.ma_ok if p["filt"] == "ma" else True), add
 
 
+def s8(v, p):
+    t = v.sar[p["sar"]]
+    if p["entry"] == "flip+stm4":      # 同 S4：翻转当天指标1 已同向
+        raw = flip_with(t) & (v.s4 > 0)
+    elif p["entry"] == "state":        # 灵敏 SAR 多头且指标1>0，两者首次同时成立
+        raw = first((t == 1) & (v.s4 > 0))
+    else:                              # 只看 SAR 翻转
+        raw = flip_with(t)
+    return raw, raw, None
+
+
 def s7(v, p):
     raw = first((v.sar[p["sar"]] == 1) & (v.s4 > 0) & v.ma_ok)
     return raw, raw, None
@@ -152,6 +165,9 @@ STRATEGIES = {
                 stop=["swing", "atr2"])),
     "S7": ("1+4趋势共振+更灵敏的入场SAR", s7,
            dict(sar=["std", "s1", "s2", "s3"], exit=["slowstate", "sar:slow"], stop=["atr1.5", "atr2.5"])),
+    "S8": ("S4高频版(约每月一笔)", s8,
+           dict(sar=["s1", "s2", "s3", "std"], entry=["flip+stm4", "state", "flip"],
+                exit=["sar:same", "sar:std", "sar:mid", "sar:slow", "rev"], stop=["atr1.5", "atr2", "atr2.5"])),
 }
 
 
