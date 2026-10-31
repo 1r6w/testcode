@@ -15,8 +15,14 @@ class Account:
     tick: float = 0.5            # 最小变动价位
     slip_ticks: int = 1          # 每边滑点
     fee_rate: float = 1.5e-4     # 每边手续费（按成交额，含交易所+期货公司）
+    fee_per_lot: float = 0.0     # 每边每手另加的固定手续费（如“交易所加一分钱”= 0.01 元/手）
+    fee_rate_today: float = None # 当天开当天平（平今）时的平仓费率，None = 与 fee_rate 相同
     risk_per_trade: float = 0.02 # 每笔初始止损风险占权益比例
     max_leverage: float = 3.0    # 名义市值 / 权益 上限（焦煤保证金约 15%-20%）
+    sizing: str = "risk"         # risk = 按单笔风险定手数；margin = 按保证金占用比例；notional = 按合约市值比例
+    pos_frac: float = 0.5        # sizing=margin/notional 时每次开仓占权益的比例
+    margin_rate: float = 0.15    # sizing=margin 时假设的保证金比例
+    compound: bool = True        # False = 始终按初始资金计算开仓手数（不复利）
 
 
 def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=None, sig=None):
@@ -65,14 +71,15 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
     pending_add, added = False, True
     trades, equity = [], np.empty(len(df))
 
-    def fee(px, lots):
-        return px * lots * acct.mult * acct.fee_rate
+    def fee(px, lots, today=False):
+        rate = acct.fee_rate_today if today and acct.fee_rate_today is not None else acct.fee_rate
+        return px * lots * acct.mult * rate + lots * acct.fee_per_lot
 
     def close_pos(i, px, reason):
         nonlocal cash, pos
         side = 1 if pos > 0 else -1
         fill = px - side * slip
-        pnl = (fill - entry_px) * pos * acct.mult - fee(fill, abs(pos))
+        pnl = (fill - entry_px) * pos * acct.mult - fee(fill, abs(pos), today=i == entry_i)
         cash += pnl
         trades.append(dict(entry_date=dates[entry_i], exit_date=dates[i], side="多" if side > 0 else "空",
                            lots=abs(pos), entry=entry_px, exit=fill, pnl=pnl,
@@ -92,9 +99,14 @@ def run_backtest(df, p: Params = None, acct: Account = None, start=None, end=Non
             dist = p.stop_k * pending_atr
             if not np.isnan(pending_level):  # 前低/前高止损，距离限制在 0.5~4 倍 ATR
                 dist = min(max((fill - pending_level) * side, 0.5 * pending_atr), 4.0 * pending_atr)
-            equity_now = cash
-            lots = math.floor(equity_now * acct.risk_per_trade * entry_frac / (dist * acct.mult))
-            lots = min(lots, math.floor(equity_now * acct.max_leverage / (fill * acct.mult)))
+            equity_now = cash if acct.compound else acct.capital
+            if acct.sizing == "margin":
+                lots = math.floor(equity_now * acct.pos_frac / (fill * acct.mult * acct.margin_rate))
+            elif acct.sizing == "notional":
+                lots = math.floor(equity_now * acct.pos_frac / (fill * acct.mult))
+            else:
+                lots = math.floor(equity_now * acct.risk_per_trade * entry_frac / (dist * acct.mult))
+                lots = min(lots, math.floor(equity_now * acct.max_leverage / (fill * acct.mult)))
             if lots > 0:
                 pos, entry_px, entry_i, init_risk, kind = side * lots, fill, i, dist, pending_kind
                 stop, ext = fill - side * dist, fill

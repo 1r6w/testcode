@@ -227,6 +227,22 @@ S4 每年约 4.7 笔。为提高频率，新增 S8（S4 高频版，`library.py`
 
 （单笔风险 2%，按各自分得的资金计算。）
 
+## S4：50 万初始资金、每次半仓（`run_s4.py`）
+
+设置：初始资金 50 万；每次开仓用当时权益的 50% 做保证金；保证金按交易所标准 12%（未能从大商所官网直接核实，
+另给 15%、20% 对照）；手续费按交易所标准成交额万分之一 + 0.01 元/手（“加一分钱”），平今按万分之二 + 0.01 元/手；
+滑点每边 1 跳。逐笔交易：`results/s4_500000_margin50_trades.csv`（复利）、`results/s4_500000_margin50_fixed_trades.csv`（不复利）。
+
+| 保证金 | 复利 | 期末权益 | 年化 | 最大回撤 | 胜率 | 盈亏比（金额） | 盈亏比（占权益%） | 单笔最大亏损 | 2021 后年化 / 回撤 |
+|---|---|---|---|---|---|---|---|---|---|
+| 12% | 是 | 2.75 亿 | 59.0% | -81.2% | 54.7% | 1.18 | 2.65 | -59.5% | 49.7% / -80.5% |
+| 12% | 否 | 742 万 | 21.9% | -42.3% | 54.7% | 2.64 | 3.16 | -15.2% | 40.4% / -71.3% |
+| 15% | 是 | 1.92 亿 | 54.8% | -72.7% | 54.7% | 1.33 | 2.65 | -47.6% | 48.9% / -71.5% |
+| 20% | 是 | 8916 万 | 46.4% | -62.1% | 54.7% | 1.52 | 2.65 | -35.7% | 45.6% / -60.0% |
+
+半仓在 12% 保证金下相当于合约市值约为权益的 4.2 倍；止损距离通常为价格的 4%~11%，波动剧烈时（如 2021 年 10–11 月）
+接近 20%，单笔可亏掉一半以上权益。复利口径的金额盈亏比被后期巨大仓位扭曲，应看“占权益%”口径。
+
 ## 运行
 
 ```bash
@@ -234,6 +250,8 @@ pip install pandas matplotlib
 python run_combos.py --csv data/JM_weighted_user.csv            # 15 种指标组合对比
 python run_turn.py --csv data/JM_weighted_user.csv              # 动能拐点思路对比（--grids 重跑网格）
 python run_library.py --csv data/JM_weighted_user.csv           # 7 个策略对比 + 三策略组合
+python run_s4.py --csv data/JM_weighted_user.csv --capital 500000 --sizing margin --frac 0.5 --margin-rate 0.12 \
+    --fee-rate 0.0001 --fee-per-lot 0.01 --fee-rate-today 0.0002   # S4 半仓回测
 python run_backtest.py --csv data/JM_weighted_user.csv          # 默认参数回测
 python run_backtest.py --csv data/JM_weighted_user.csv --grid   # 附带参数邻域稳健性检验
 python run_backtest.py --csv data/JM_weighted_user.csv --risk 0.05
