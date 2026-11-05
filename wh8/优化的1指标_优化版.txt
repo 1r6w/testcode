@@ -1,0 +1,68 @@
+N:=20;
+
+{一、ATR波动率}
+TR1:=MAX(HIGH-LOW,MAX(ABS(HIGH-REF(CLOSE,1)),ABS(LOW-REF(CLOSE,1))));
+ATR1:=MA(TR1,14);
+A:=MAX(ATR1,0.01);
+
+{二、趋势强度}
+MA5:=MA(CLOSE,5);
+MA20:=MA(CLOSE,N);
+T1:=(MA5-MA20)/A*20;
+
+{三、MACD动能}
+DIF1:=EMA(CLOSE,12)-EMA(CLOSE,26);
+DEA1:=EMA(DIF1,9);
+M1:=(DIF1-DEA1)/A*10;
+
+{四、RSI强弱}
+UP1:=MAX(CLOSE-REF(CLOSE,1),0);
+DN1:=ABS(CLOSE-REF(CLOSE,1));
+RSI1:=SMA(UP1,14,1)/MAX(SMA(DN1,14,1),0.01)*100;
+
+{五、综合动能}
+RAW1:=T1+M1+(RSI1-50)*0.5;
+STM:EMA(RAW1,3),COLORRED,LINETHICK2;
+
+{六、四色柱：红=上涨加速 黄=减速 绿=下跌加速}
+红柱:=STM>0 AND STM>=REF(STM,1);
+黄多:=STM>0 AND STM<REF(STM,1);
+绿柱:=STM<0 AND STM<=REF(STM,1);
+黄空:=STM<0 AND STM>REF(STM,1);
+STICKLINE(红柱,STM,0,2,0),COLORRED;
+STICKLINE(黄多,STM,0,2,0),COLORYELLOW;
+STICKLINE(绿柱,STM,0,2,0),COLORGREEN;
+STICKLINE(黄空,STM,0,2,0),COLORYELLOW;
+
+{七、每天都会变化的读数（标题栏显示，不画线）}
+{状态：2=上涨加速 1=上涨减速 -1=下跌减速 -2=下跌加速}
+状态:IFELSE(红柱,2,IFELSE(黄多,1,IFELSE(黄空,-1,IFELSE(绿柱,-2,0)))),NODRAW;
+{连续减速天数：上涨中连续黄柱天数 / 下跌中连续黄柱天数}
+涨减速天数:IFELSE(黄多,BARSLAST(黄多=0),0),NODRAW;
+跌减速天数:IFELSE(黄空,BARSLAST(黄空=0),0),NODRAW;
+
+{八、动能衰减：连续2天减速（上涨、下跌对称）}
+涨动能减弱:=黄多 AND REF(黄多,1);
+跌动能减弱:=黄空 AND REF(黄空,1);
+
+{九、顶部预警 / 底部预警（对称）}
+顶部预警:=CLOSE>REF(HHV(HIGH,10),1) AND STM<REF(STM,1) AND STM>0;
+底部预警:=CLOSE<REF(LLV(LOW,10),1) AND STM>REF(STM,1) AND STM<0;
+
+{十、3天减速观察：连续3天减速 + 高点(低点)连续抬升(下移)}
+抄底观察:=COUNT(黄空,3)=3 AND COUNT(HIGH>REF(HIGH,1),2)=2;
+逃顶观察:=COUNT(黄多,3)=3 AND COUNT(LOW<REF(LOW,1),2)=2;
+
+{十一、多空信号：STM穿越零轴}
+多:=CROSS(STM,0);
+空:=CROSS(0,STM);
+
+{十二、把信号直接标在柱子上（只在第一次出现那天标）}
+DRAWTEXT(多,STM,'多'),COLORRED;
+DRAWTEXT(空,STM,'空'),COLORGREEN;
+DRAWTEXT(涨动能减弱 AND REF(涨动能减弱,1)=0,STM,'减弱'),COLORYELLOW;
+DRAWTEXT(跌动能减弱 AND REF(跌动能减弱,1)=0,STM,'减弱'),COLORYELLOW;
+DRAWTEXT(顶部预警,STM,'顶'),COLORMAGENTA;
+DRAWTEXT(底部预警,STM,'底'),COLORCYAN;
+DRAWTEXT(抄底观察 AND REF(抄底观察,1)=0,STM,'抄底?'),COLORCYAN;
+DRAWTEXT(逃顶观察 AND REF(逃顶观察,1)=0,STM,'逃顶?'),COLORMAGENTA;
